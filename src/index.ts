@@ -6,10 +6,12 @@ import {
   CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
+  TELEGRAM_BOT_POOL,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
+import { initBotPool } from './channels/telegram.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -482,6 +484,11 @@ async function main(): Promise<void> {
     CREDENTIAL_PROXY_PORT,
     PROXY_BIND_HOST,
   );
+
+  // Initialize Telegram bot pool for agent swarms (if configured)
+  if (TELEGRAM_BOT_POOL.length > 0) {
+    await initBotPool(TELEGRAM_BOT_POOL);
+  }
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
