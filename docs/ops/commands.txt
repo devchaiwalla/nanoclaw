@@ -1,0 +1,267 @@
+================================================================================
+  NANOCLAW OPS REFERENCE
+  Quick commands for managing, monitoring, and debugging NanoClaw
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+  SERVICE MANAGEMENT  (systemd — Linux)
+────────────────────────────────────────────────────────────────────────────────
+
+# Start the service
+systemctl --user start nanoclaw
+
+# Stop the service (graceful shutdown — waits for active containers to finish)
+systemctl --user stop nanoclaw
+
+# Restart (stop + start — use after config/code changes)
+systemctl --user restart nanoclaw
+
+# Check current status (shows PID, memory, last few log lines)
+systemctl --user status nanoclaw
+
+# Enable auto-start on login/boot (should already be enabled)
+systemctl --user enable nanoclaw
+
+# Disable auto-start
+systemctl --user disable nanoclaw
+
+
+────────────────────────────────────────────────────────────────────────────────
+  LOGS — NANOCLAW PROCESS
+────────────────────────────────────────────────────────────────────────────────
+
+# Tail live logs (follow in real time — Ctrl+C to stop)
+tail -f /home/ubuntu/nanoclaw/logs/nanoclaw.log
+
+# Tail errors only
+tail -f /home/ubuntu/nanoclaw/logs/nanoclaw.error.log
+
+# Last 100 lines
+tail -100 /home/ubuntu/nanoclaw/logs/nanoclaw.log
+
+# View via systemd journal (also works, includes timestamps)
+journalctl --user -u nanoclaw -f
+journalctl --user -u nanoclaw -n 100 --no-pager
+
+# Search logs for a keyword (e.g. errors, a group name, a sender)
+grep -i "error" /home/ubuntu/nanoclaw/logs/nanoclaw.log | tail -30
+grep "telegram_main" /home/ubuntu/nanoclaw/logs/nanoclaw.log | tail -20
+
+# WHAT TO LOOK FOR IN LOGS:
+#
+#   GOOD signs:
+#     "Telegram bot connected"          — bot is polling Telegram OK
+#     "State loaded"                    — DB loaded cleanly on startup
+#     "Telegram message stored"         — incoming message received
+#     "Processing messages"             — agent container is starting
+#     "Agent output: ..."               — agent replied successfully
+#     "Keepalive: resetting idle timer" — keepalive ping fired (container stays warm)
+#
+#   WARNING signs (usually recoverable):
+#     "Markdown send failed, falling back to plain text"  — minor, message still sent
+#     "Failed to set typing indicator"                    — cosmetic, ignore
+#     "Channel installed but credentials missing"         — channel not configured
+#     "Corrupted last_agent_timestamp"                    — auto-reset, watch for repeat
+#
+#   ERROR signs (need attention):
+#     "Container agent error"           — agent failed; check container logs below
+#     "Agent error, rolled back cursor" — will retry on next message
+#     "Max retries exceeded"            — messages dropped; restart service
+#     "Message loop crashed"            — process will exit; systemd will restart it
+#     "No channel owns JID"             — group registered but channel disconnected
+#     "GrammyError"                     — Telegram API error; see Telegram section
+#     "Container timeout"               — container ran too long; usually OK after output
+
+
+────────────────────────────────────────────────────────────────────────────────
+  LOGS — AGENT CONTAINERS
+────────────────────────────────────────────────────────────────────────────────
+# Container run logs are saved per group under groups/<group>/logs/
+# Each container run creates a timestamped file.
+
+# List recent container run logs for the main group
+ls -lt /home/ubuntu/nanoclaw/groups/telegram_main/logs/
+
+# Read the most recent container log
+cat $(ls -t /home/ubuntu/nanoclaw/groups/telegram_main/logs/container-*.log 2>/dev/null | head -1)
+
+# Read for another group (replace folder name as needed)
+ls -lt /home/ubuntu/nanoclaw/groups/telegram_salesforce-nano-team/logs/
+
+# WHAT TO LOOK FOR IN CONTAINER LOGS:
+#
+#   GOOD: "[agent-runner] Session initialized: <id>"  — Claude session started
+#   GOOD: "[agent-runner] Result #1: ..."              — agent produced a result
+#   GOOD: "[agent-runner] Query done."                 — clean completion
+#   GOOD: "[agent-runner] Close sentinel received"     — idle timeout fired cleanly
+#
+#   BAD:  "TIMEOUT" in the header                      — container was force-killed
+#   BAD:  "Agent error: ..."                           — Claude SDK error
+#   BAD:  "Failed to parse input"                      — bad message format
+
+
+────────────────────────────────────────────────────────────────────────────────
+  DOCKER CONTAINERS
+────────────────────────────────────────────────────────────────────────────────
+
+# List currently running agent containers
+docker ps --filter "name=nanoclaw-"
+
+# List all containers including recently exited ones
+docker ps -a --filter "name=nanoclaw-" | head -20
+
+# Check resource usage of running containers (CPU, memory)
+docker stats --no-stream --filter "name=nanoclaw-"
+
+# View live logs from a running container (replace NAME with full container name)
+docker logs -f <container-name>
+# Example:
+docker logs -f nanoclaw-telegram-main-1742567890123
+
+# Force stop a stuck container
+docker stop nanoclaw-telegram-main-1742567890123
+
+# Force kill a container that won't stop
+docker kill nanoclaw-telegram-main-1742567890123
+
+# Remove all stopped nanoclaw containers (cleanup)
+docker container prune --filter "name=nanoclaw-"
+
+# Check the base agent image exists
+docker images nanoclaw-agent
+
+# Rebuild the agent image (needed after changes to container/ code)
+cd /home/ubuntu/nanoclaw && ./container/build.sh
+
+# Rebuild from scratch (use if build cache is stale — see CLAUDE.md note)
+docker builder prune -f && ./container/build.sh
+
+
+────────────────────────────────────────────────────────────────────────────────
+  TELEGRAM CONNECTION
+────────────────────────────────────────────────────────────────────────────────
+
+# Check service is running and Telegram bot connected
+journalctl --user -u nanoclaw --no-pager | grep -E "Telegram bot (connected|stopped|error)"
+
+# Verify bot token is set in .env
+grep "TELEGRAM_BOT_TOKEN" /home/ubuntu/nanoclaw/.env | cut -c1-40
+
+# Check bot pool tokens (for agent swarm/teams)
+grep "TELEGRAM_BOT_POOL" /home/ubuntu/nanoclaw/.env | cut -c1-80
+
+# Test bot is reachable (replace TOKEN with your actual token)
+# Should return {"ok":true,"result":{"id":...,"username":"...","is_bot":true,...}}
+curl -s "https://api.telegram.org/bot$(grep TELEGRAM_BOT_TOKEN /home/ubuntu/nanoclaw/.env | cut -d= -f2)/getMe"
+
+# Check recent Telegram errors in logs
+grep -i "grammy\|telegram" /home/ubuntu/nanoclaw/logs/nanoclaw.error.log | tail -20
+
+# WHAT TO LOOK FOR:
+#
+#   "Telegram bot connected" on startup    — bot polling is live
+#   "Telegram message stored"              — incoming messages are being received
+#   "Telegram message sent"                — outgoing messages are working
+#
+#   GrammyError 400 "chat not found"       — group JID is wrong or bot was removed
+#   GrammyError 401 "Unauthorized"         — bot token is invalid or revoked
+#   GrammyError 429 "Too Many Requests"    — rate limited; will auto-recover
+#   GrammyError 403 "Forbidden"            — bot was blocked or kicked from chat
+#   "Telegram bot stopped"                 — service was stopped (normal on shutdown)
+#
+# If bot stopped responding mid-session:
+#   1. Check if service is still running:   systemctl --user status nanoclaw
+#   2. Check for crash:                     journalctl --user -u nanoclaw -n 50
+#   3. Restart if needed:                   systemctl --user restart nanoclaw
+
+
+────────────────────────────────────────────────────────────────────────────────
+  REGISTERED GROUPS & MESSAGE ROUTING
+────────────────────────────────────────────────────────────────────────────────
+
+# View registered groups in the database
+sqlite3 /home/ubuntu/nanoclaw/store/messages.db \
+  "SELECT jid, name, folder, is_main, requires_trigger FROM registered_groups;"
+
+# View recent incoming messages (last 20)
+sqlite3 /home/ubuntu/nanoclaw/store/messages.db \
+  "SELECT chat_jid, sender_name, substr(content,1,60), timestamp FROM messages ORDER BY timestamp DESC LIMIT 20;"
+
+# Count messages per group
+sqlite3 /home/ubuntu/nanoclaw/store/messages.db \
+  "SELECT chat_jid, count(*) as msg_count FROM messages GROUP BY chat_jid ORDER BY msg_count DESC;"
+
+# Check scheduled tasks
+sqlite3 /home/ubuntu/nanoclaw/store/messages.db \
+  "SELECT id, group_folder, schedule_type, schedule_value, status, next_run FROM scheduled_tasks;"
+
+# Check saved sessions (agent memory continuity)
+sqlite3 /home/ubuntu/nanoclaw/store/messages.db \
+  "SELECT group_folder, session_id FROM sessions;"
+
+# Check router state (last processed timestamps)
+sqlite3 /home/ubuntu/nanoclaw/store/messages.db \
+  "SELECT key, value FROM router_state;"
+
+
+────────────────────────────────────────────────────────────────────────────────
+  HEALTH CHECK — QUICK ALL-IN-ONE
+────────────────────────────────────────────────────────────────────────────────
+
+# Run this to get a full status snapshot:
+echo "=== Service ===" && systemctl --user status nanoclaw --no-pager | head -5
+echo ""
+echo "=== Running Containers ===" && docker ps --filter "name=nanoclaw-" --format "table {{.Names}}\t{{.Status}}\t{{.RunningFor}}"
+echo ""
+echo "=== Last 10 Log Lines ===" && tail -10 /home/ubuntu/nanoclaw/logs/nanoclaw.log
+echo ""
+echo "=== Registered Groups ===" && sqlite3 /home/ubuntu/nanoclaw/store/messages.db "SELECT name, folder, is_main FROM registered_groups;"
+
+
+────────────────────────────────────────────────────────────────────────────────
+  KEEPALIVE & TIMEOUT SETTINGS  (in .env)
+────────────────────────────────────────────────────────────────────────────────
+
+# Current settings (view):
+grep -E "IDLE_TIMEOUT|KEEPALIVE_INTERVAL|CONTAINER_TIMEOUT" /home/ubuntu/nanoclaw/.env
+
+# KEEPALIVE_INTERVAL  — how often (ms) to silently ping the container to reset idle timer
+#                       Default: 0 (disabled). Set to 1500000 = 25 min ping.
+# IDLE_TIMEOUT        — how long (ms) after last response before container closes
+#                       Default: 1800000 = 30 min
+# CONTAINER_TIMEOUT   — hard kill deadline (ms) from last agent output
+#                       Default: 1800000 = 30 min. Set to 86400000 = 24h for keepalive.
+#
+# Current config: keepalive every 25 min resets the 30-min idle timer.
+# Container stays warm until 24h of zero activity → auto-cleans up.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  COMMON FIXES
+────────────────────────────────────────────────────────────────────────────────
+
+# Agent not responding after service restart
+#   → Restart the service (clears any stuck state):
+systemctl --user restart nanoclaw
+
+# Agent container stuck / not exiting
+#   → Find and force-stop it:
+docker ps --filter "name=nanoclaw-"
+docker stop <container-name>
+
+# Rebuild after code changes to container/agent-runner/
+./container/build.sh
+
+# Wipe and clean-rebuild container image (stale build cache)
+docker builder prune -f && ./container/build.sh
+
+# Check if credential proxy is running (agents need this to call Claude API)
+grep -E "credential proxy|CREDENTIAL_PROXY" /home/ubuntu/nanoclaw/logs/nanoclaw.log | tail -5
+
+# IPC directory (follow-up messages queued for running containers)
+ls /home/ubuntu/nanoclaw/data/ipc/
+
+# Clear stale IPC input files for a group (if container is stuck reading old input)
+rm -f /home/ubuntu/nanoclaw/data/ipc/telegram_main/input/*.json
+rm -f /home/ubuntu/nanoclaw/data/ipc/telegram_main/input/_close

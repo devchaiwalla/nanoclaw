@@ -5,6 +5,7 @@ import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
+  KEEPALIVE_INTERVAL,
   POLL_INTERVAL,
   TELEGRAM_BOT_POOL,
   TIMEZONE,
@@ -198,10 +199,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // Track idle timer for closing stdin when agent is idle
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
+      if (keepaliveTimer) {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = null;
+      }
       logger.debug(
         { group: group.name },
         'Idle timeout, closing container stdin',
@@ -209,6 +215,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       queue.closeStdin(chatJid);
     }, IDLE_TIMEOUT);
   };
+
+  // Silently reset the idle timer before it expires so the container stays warm
+  if (KEEPALIVE_INTERVAL > 0) {
+    keepaliveTimer = setInterval(() => {
+      if (idleTimer !== null) {
+        logger.debug({ group: group.name }, 'Keepalive: resetting idle timer');
+        resetIdleTimer();
+      }
+    }, KEEPALIVE_INTERVAL);
+  }
 
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
@@ -243,6 +259,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
+  if (keepaliveTimer) {
+    clearInterval(keepaliveTimer);
+    keepaliveTimer = null;
+  }
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
